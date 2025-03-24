@@ -1,0 +1,106 @@
+#  Assignment 6 – Order Processing & HR Trigger
+**Prepared by:** Omar Mohamed
+**Date:** March 2025
+
+---
+##  Task 1: Develop Order Processing Components
+**Objective:** Using `Shop_Database`, implement components to process customer orders.
+
+### 1. Discount Calculation Function (`dbo.fn_CalculateDiscount`)
+```sql
+CREATE FUNCTION dbo.fn_CalculateDiscount(
+    @CustomerID INT,
+    @OrderAmount DECIMAL(10, 2)
+)
+RETURNS DECIMAL(10, 2)
+AS
+BEGIN
+    DECLARE @PreviousTotal DECIMAL(10, 2) = 0,
+            @Discount DECIMAL(10, 2) = 0;
+
+    SELECT @PreviousTotal = ISNULL(SUM(Amount), 0)
+    FROM Orders
+    WHERE CustomerID = @CustomerID;
+
+    IF (@PreviousTotal + @OrderAmount) >= 1000
+        SET @Discount = @OrderAmount * 0.10;
+
+    RETURN @Discount;
+END;
+```
+
+### 2. Order Creation Stored Procedure (`dbo.sp_CreateOrder`)
+```sql
+CREATE PROCEDURE dbo.sp_CreateOrder
+    @OrderID INT,
+    @Amount DECIMAL(10, 2),
+    @CustomerID INT,
+    @NewOrderID INT OUTPUT
+AS
+BEGIN
+    -- Validate amount
+    IF @Amount < 0
+        RETURN 100;
+
+    -- Validate customer
+    IF NOT EXISTS (SELECT 1 FROM Customers WHERE CustomerID = @CustomerID)
+        RETURN 150;
+
+    -- Calculate discount
+    DECLARE @Discount DECIMAL(10, 2) = dbo.fn_CalculateDiscount(@CustomerID, @Amount);
+    DECLARE @FinalAmount DECIMAL(10, 2) = @Amount - @Discount;
+
+    -- Insert order
+    INSERT INTO Orders (Amount, CustomerID)
+    VALUES (@FinalAmount, @CustomerID);
+
+    SET @NewOrderID = SCOPE_IDENTITY();
+
+    -- Return order with customer info
+    SELECT O.ID AS OrderID, O.CustomerID, O.Amount, C.Name AS CustomerName
+    FROM Orders O
+    JOIN Customers C ON O.CustomerID = C.CustomerID
+    WHERE O.ID = @NewOrderID;
+
+    RETURN 200;
+END;
+
+##  Task 2: Implement HR_DB Department Headcount Trigger
+
+### 1. Add `CurrentHeadcount` to `Departments` table
+```sql
+ALTER TABLE Departments
+ADD CurrentHeadcount INT DEFAULT 0;
+```
+
+### 2. Create Trigger `TR_UpdateHeadcount`
+```sql
+CREATE TRIGGER TR_UpdateHeadcount
+ON Employees
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Prevent DELETEs
+    IF EXISTS (SELECT * FROM DELETED) AND NOT EXISTS (SELECT * FROM INSERTED)
+    BEGIN
+        RAISERROR('Deleting employees is not allowed.', 16, 1);
+        ROLLBACK;
+        RETURN;
+    END
+
+    -- Update CurrentHeadcount for affected departments
+    UPDATE D
+    SET CurrentHeadcount = (
+        SELECT COUNT(*)
+        FROM Employees E
+        WHERE E.DepartmentID = D.ID AND E.ExitDate IS NULL
+    )
+    FROM Departments D
+    WHERE D.ID IN (
+        SELECT DepartmentID FROM INSERTED
+        UNION
+        SELECT DepartmentID FROM DELETED
+    );
+END;
